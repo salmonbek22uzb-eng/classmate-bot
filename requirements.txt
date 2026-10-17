@@ -1,5 +1,5 @@
 pytz
 requests
-python-telegram-bot>=20.0
+python-telegram-bot[job-queue]
 google-genai
 python-dotenv
