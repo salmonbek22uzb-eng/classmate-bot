@@ -7,37 +7,39 @@ from datetime import datetime, time, timedelta
 
 import pytz
 import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # yonidagi .env faylni o'qiydi (BOT_TOKEN=..., GEMINI_API_KEY=...)
+    load_dotenv()
 except ImportError:
     pass
 
 # ---------------------------------------------------------------
-# SOZLAMALAR (token va kalitlarni environment variable orqali ber)
+# SOZLAMALAR
 # ---------------------------------------------------------------
 TOKEN = os.getenv("BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")  # test_gemini.py shu nomni ishlaydi deb topdi
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "asusmac")
-PROXY_URL = os.getenv("PROXY_URL", "")  # ixtiyoriy, faqat ishonchli proxy uchun
 
 TZ = pytz.timezone("Asia/Tashkent")
 DB_FILE = "class_bot.db"
 EMAKTAB_URL = "https://emaktab.uz"
-REMINDER_TIME = time(20, 0)      # har kuni 20:00 da ertangi jadval yuboriladi
-AI_USER_LIMIT = 5                # bitta o'quvchiga kuniga nechta AI savol
-AI_GLOBAL_LIMIT = 150            # butun bot uchun kuniga nechta AI savol (bepul limitni asrash uchun)
-MAX_PW_TRIES = 3                 # parolni noto'g'ri kiritish limiti
-LOCK_MINUTES = 10                # limit tugasa shuncha daqiqa bloklanadi
+REMINDER_TIME = time(20, 0, tzinfo=TZ)
+AI_USER_LIMIT = 5
+AI_GLOBAL_LIMIT = 150
+MAX_PW_TRIES = 3
+LOCK_MINUTES = 10
 
-# ---------------------------------------------------------------
-# MA'LUMOTLAR
-# 0 = Dushanba, 1 = Seshanba, ... 5 = Shanba
-# ---------------------------------------------------------------
 DAYS = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"]
 
 SCHEDULE = {
@@ -76,10 +78,8 @@ AI_SYSTEM_PROMPT = (
     "yechish yo'lini tushuntir. Javob 150 so'zdan oshmasin."
 )
 
-
 def now():
     return datetime.now(TZ)
-
 
 # ---------------------------------------------------------------
 # BAZA (SQLite)
@@ -93,7 +93,6 @@ def db():
     finally:
         conn.close()
 
-
 def init_db():
     with db() as c:
         c.execute("CREATE TABLE IF NOT EXISTS users ("
@@ -102,18 +101,15 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS ai_usage ("
                   "user_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (user_id, day))")
 
-
 def save_user(user):
     with db() as c:
         c.execute("INSERT OR IGNORE INTO users (user_id, name) VALUES (?, ?)",
                   (user.id, user.first_name or ""))
 
-
 def get_reminder(user_id):
     with db() as c:
         row = c.execute("SELECT reminder FROM users WHERE user_id=?", (user_id,)).fetchone()
     return bool(row[0]) if row else True
-
 
 def toggle_reminder(user_id):
     new = 0 if get_reminder(user_id) else 1
@@ -121,21 +117,17 @@ def toggle_reminder(user_id):
         c.execute("UPDATE users SET reminder=? WHERE user_id=?", (new, user_id))
     return bool(new)
 
-
 def reminder_users():
     with db() as c:
         return [r[0] for r in c.execute("SELECT user_id FROM users WHERE reminder=1")]
-
 
 def all_users():
     with db() as c:
         return [r[0] for r in c.execute("SELECT user_id FROM users")]
 
-
 def is_admin(user_id):
     with db() as c:
         return c.execute("SELECT 1 FROM admins WHERE user_id=?", (user_id,)).fetchone() is not None
-
 
 def set_admin(user_id, value):
     with db() as c:
@@ -144,14 +136,12 @@ def set_admin(user_id, value):
         else:
             c.execute("DELETE FROM admins WHERE user_id=?", (user_id,))
 
-
 def ai_used_today(user_id):
     day = now().strftime("%Y-%m-%d")
     with db() as c:
         row = c.execute("SELECT count FROM ai_usage WHERE user_id=? AND day=?", (user_id, day)).fetchone()
         total = c.execute("SELECT COALESCE(SUM(count),0) FROM ai_usage WHERE day=?", (day,)).fetchone()[0]
     return (row[0] if row else 0), total
-
 
 def ai_add_usage(user_id):
     day = now().strftime("%Y-%m-%d")
@@ -160,13 +150,11 @@ def ai_add_usage(user_id):
                   "ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1", (user_id, day))
         c.execute("DELETE FROM ai_usage WHERE day < ?", ((now() - timedelta(days=3)).strftime("%Y-%m-%d"),))
 
-
 # ---------------------------------------------------------------
 # JADVAL MATNLARI
 # ---------------------------------------------------------------
 def fmt(t):
     return t.strftime("%H:%M")
-
 
 def day_text(weekday, prefix="📅"):
     lessons = SCHEDULE.get(weekday)
@@ -178,10 +166,8 @@ def day_text(weekday, prefix="📅"):
         lines.append(f"{i + 1}. {subject} ({fmt(start)}–{fmt(end)})")
     return "\n".join(lines)
 
-
 def week_text():
     return "\n\n".join(day_text(d) for d in range(6))
-
 
 def current_lesson_text():
     n_ = now()
@@ -208,12 +194,10 @@ def current_lesson_text():
                     f"Keyingi dars ({i + 2}-dars) {fmt(BELLS[i + 1][0])} da: {lessons[i + 1]}")
     return "Bugungi darslar tugadi ✅"
 
-
 # ---------------------------------------------------------------
 # AI (Gemini REST API)
 # ---------------------------------------------------------------
 def ask_ai(question):
-    """Qaytaradi: (matn, xato_bormi)"""
     if not GEMINI_API_KEY:
         return "AI hali sozlanmagan.", True
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -230,7 +214,6 @@ def ask_ai(question):
     if r.status_code == 429:
         return "AI hozir band (limit tugagan). Birozdan keyin urinib ko'r.", True
     if r.status_code != 200:
-        print("Gemini xatosi:", r.status_code, r.text[:300])  # model nomi noto'g'ri bo'lsa shu yerda ko'rinadi
         return "AI hozir ishlamayapti.", True
     try:
         parts = r.json()["candidates"][0]["content"]["parts"]
@@ -238,7 +221,6 @@ def ask_ai(question):
     except (KeyError, IndexError, ValueError):
         return "AI javob bera olmadi. Savolni boshqacha yozib ko'r.", True
     return (text[:3500] or "AI javob bera olmadi."), False
-
 
 # ---------------------------------------------------------------
 # TUGMALAR
@@ -254,7 +236,6 @@ def main_menu(user_id):
         [InlineKeyboardButton("ℹ️ Bot haqida", callback_data="about")],
     ])
 
-
 def schedule_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 Bugungi", callback_data="today"),
@@ -262,10 +243,8 @@ def schedule_menu():
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="back")],
     ])
 
-
 def back_menu():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="back")]])
-
 
 def admin_menu():
     return InlineKeyboardMarkup([
@@ -275,205 +254,170 @@ def admin_menu():
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="back")],
     ])
 
-
 def confirm_menu():
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yuborish", callback_data="adm_send"),
         InlineKeyboardButton("❌ Bekor qilish", callback_data="adm_cancel"),
     ]])
 
-
 # ---------------------------------------------------------------
-# HANDLERLAR
+# HANDLERLAR (v20+ async rejimda)
 # ---------------------------------------------------------------
-pw_fails = {}   # user_id -> (xatolar soni, bloklangan vaqt)
+pw_fails = {}
 
-
-def start(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
     context.user_data.clear()
-    update.message.reply_text("Salom! Quyidagilardan birini tanla 👇",
-                              reply_markup=main_menu(update.effective_user.id))
+    await update.message.reply_text("Salom! Quyidagilardan birini tanla 👇",
+                                    reply_markup=main_menu(update.effective_user.id))
 
-
-def buttons(update, context):
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     data = query.data
     uid = query.from_user.id
     save_user(query.from_user)
 
-    if data != "adm_send":  # tugma bosilganda oldingi holatni tozalaymiz
+    if data != "adm_send":
         if data not in ("adm_cancel",):
             context.user_data.pop("state", None)
 
     if data == "back":
         context.user_data.clear()
-        query.edit_message_text("Quyidagilardan birini tanla 👇", reply_markup=main_menu(uid))
+        await query.edit_message_text("Quyidagilardan birini tanla 👇", reply_markup=main_menu(uid))
     elif data == "schedule":
-        query.edit_message_text("Qaysi jadval kerak?", reply_markup=schedule_menu())
+        await query.edit_message_text("Qaysi jadval kerak?", reply_markup=schedule_menu())
     elif data == "today":
-        query.edit_message_text(day_text(now().weekday()), reply_markup=schedule_menu())
+        await query.edit_message_text(day_text(now().weekday()), reply_markup=schedule_menu())
     elif data == "week":
-        query.edit_message_text(week_text(), reply_markup=schedule_menu())
+        await query.edit_message_text(week_text(), reply_markup=schedule_menu())
     elif data == "now":
-        query.edit_message_text(current_lesson_text(), reply_markup=back_menu())
+        await query.edit_message_text(current_lesson_text(), reply_markup=back_menu())
     elif data == "about":
-        query.edit_message_text(ABOUT_TEXT, reply_markup=back_menu(), parse_mode="HTML")
+        await query.edit_message_text(ABOUT_TEXT, reply_markup=back_menu(), parse_mode="HTML")
     elif data == "toggle_rem":
         toggle_reminder(uid)
-        query.edit_message_text("Quyidagilardan birini tanla 👇", reply_markup=main_menu(uid))
+        await query.edit_message_text("Quyidagilardan birini tanla 👇", reply_markup=main_menu(uid))
 
-    # ---- AI ----
     elif data == "ai":
         used, _ = ai_used_today(uid)
         left = max(AI_USER_LIMIT - used, 0)
         context.user_data["state"] = "ai"
-        query.edit_message_text(
+        await query.edit_message_text(
             f"🤖 AI yordamchi\n\nBugun yana {left} ta savol bera olasan.\n"
             "Savolingni yoz 👇\n\n"
             "⚠️ Ismingni, telefon raqamingni va boshqa shaxsiy ma'lumotlarni yozma.",
             reply_markup=back_menu())
 
-    # ---- ADMIN ----
     elif data == "admin":
         if is_admin(uid):
-            query.edit_message_text("🔐 Admin panel", reply_markup=admin_menu())
+            await query.edit_message_text("🔐 Admin panel", reply_markup=admin_menu())
         else:
             fails, locked_until = pw_fails.get(uid, (0, None))
             if locked_until and now() < locked_until:
-                query.edit_message_text("Ko'p marta xato kiritding. Keyinroq urinib ko'r.",
-                                        reply_markup=back_menu())
+                await query.edit_message_text("Ko'p marta xato kiritding. Keyinroq urinib ko'r.",
+                                              reply_markup=back_menu())
                 return
             context.user_data["state"] = "admin_pw"
-            query.edit_message_text("Parolni yoz 👇", reply_markup=back_menu())
+            await query.edit_message_text("Parolni yoz 👇", reply_markup=back_menu())
     elif data in ("adm_broadcast", "adm_stats", "adm_logout", "adm_send", "adm_cancel"):
         if not is_admin(uid):
-            query.edit_message_text("Avval admin paneldan kir.", reply_markup=back_menu())
+            await query.edit_message_text("Avval admin paneldan kir.", reply_markup=back_menu())
             return
         if data == "adm_stats":
-            query.edit_message_text(f"👥 Botdan foydalanuvchilar soni: {len(all_users())}",
-                                    reply_markup=admin_menu())
+            await query.edit_message_text(f"👥 Botdan foydalanuvchilar soni: {len(all_users())}",
+                                          reply_markup=admin_menu())
         elif data == "adm_logout":
             set_admin(uid, False)
             context.user_data.clear()
-            query.edit_message_text("Admin paneldan chiqding.", reply_markup=main_menu(uid))
+            await query.edit_message_text("Admin paneldan chiqding.", reply_markup=main_menu(uid))
         elif data == "adm_broadcast":
             context.user_data["state"] = "broadcast"
-            query.edit_message_text("📢 E'lon matnini yoz 👇", reply_markup=back_menu())
+            await query.edit_message_text("📢 E'lon matnini yoz 👇", reply_markup=back_menu())
         elif data == "adm_cancel":
             context.user_data.clear()
-            query.edit_message_text("Bekor qilindi.", reply_markup=admin_menu())
+            await query.edit_message_text("Bekor qilindi.", reply_markup=admin_menu())
         elif data == "adm_send":
             text = context.user_data.pop("broadcast_text", None)
             context.user_data.pop("state", None)
             if not text:
-                query.edit_message_text("E'lon topilmadi.", reply_markup=admin_menu())
+                await query.edit_message_text("E'lon topilmadi.", reply_markup=admin_menu())
                 return
-            query.edit_message_text("Yuborilmoqda...")
+            await query.edit_message_text("Yuborilmoqda...")
             ok = 0
             for u in all_users():
                 try:
-                    context.bot.send_message(u, f"📢 E'lon\n\n{text}")
+                    await context.bot.send_message(u, f"📢 E'lon\n\n{text}")
                     ok += 1
                 except Exception:
                     pass
                 pytime.sleep(0.05)
-            context.bot.send_message(uid, f"✅ {ok} ta foydalanuvchiga yuborildi.",
-                                     reply_markup=admin_menu())
+            await context.bot.send_message(uid, f"✅ {ok} ta foydalanuvchiga yuborildi.",
+                                           reply_markup=admin_menu())
 
-
-def text_handler(update, context):
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     uid = update.effective_user.id
     text = update.message.text or ""
 
     if state == "admin_pw":
         try:
-            update.message.delete()  # parol chatda qolib ketmasin
+            await update.message.delete()
         except Exception:
             pass
         if hmac.compare_digest(text.strip().encode(), ADMIN_PASSWORD.encode()):
             set_admin(uid, True)
             pw_fails.pop(uid, None)
             context.user_data.clear()
-            context.bot.send_message(uid, "✅ Parol to'g'ri. Admin panel:", reply_markup=admin_menu())
+            await context.bot.send_message(uid, "✅ Parol to'g'ri. Admin panel:", reply_markup=admin_menu())
         else:
             fails = pw_fails.get(uid, (0, None))[0] + 1
             if fails >= MAX_PW_TRIES:
                 pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
                 context.user_data.clear()
-                context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
-                                         reply_markup=back_menu())
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
+                                               reply_markup=back_menu())
             else:
                 pw_fails[uid] = (fails, None)
-                context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
-                                         reply_markup=back_menu())
+                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
+                                               reply_markup=back_menu())
 
     elif state == "broadcast" and is_admin(uid):
         context.user_data["broadcast_text"] = text
-        update.message.reply_text(f"Shu e'lon yuboriladi:\n\n{text}", reply_markup=confirm_menu())
+        await update.message.reply_text(f"Shu e'lon yuboriladi:\n\n{text}", reply_markup=confirm_menu())
 
     elif state == "ai":
         used, total = ai_used_today(uid)
         if used >= AI_USER_LIMIT:
-            update.message.reply_text("Bugungi AI limiting tugadi. Ertaga qaytib kel 🙂",
-                                      reply_markup=back_menu())
+            await update.message.reply_text("Bugungi AI limiting tugadi. Ertaga qaytib kel 🙂",
+                                            reply_markup=back_menu())
             return
         if total >= AI_GLOBAL_LIMIT:
-            update.message.reply_text("Bugun AI umumiy limiti tugadi. Ertaga urinib ko'r.",
-                                      reply_markup=back_menu())
+            await update.message.reply_text("Bugun AI umumiy limiti tugadi. Ertaga urinib ko'r.",
+                                            reply_markup=back_menu())
             return
-        wait = update.message.reply_text("🤔 O'ylayapman...")
+        wait = await update.message.reply_text("🤔 O'ylayapman...")
         answer, error = ask_ai(text)
         if not error:
             ai_add_usage(uid)
             left = AI_USER_LIMIT - used - 1
             answer += f"\n\n(Bugun yana {left} ta savol qoldi)"
         try:
-            wait.delete()
+            await wait.delete()
         except Exception:
             pass
-        update.message.reply_text(answer, reply_markup=back_menu())
+        await update.message.reply_text(answer, reply_markup=back_menu())
 
     else:
-        update.message.reply_text("Menyudan tanla 👇", reply_markup=main_menu(uid))
-
+        await update.message.reply_text("Menyudan tanla 👇", reply_markup=main_menu(uid))
 
 # ---------------------------------------------------------------
 # KUNLIK ESLATMA
 # ---------------------------------------------------------------
-def send_reminders(context):
+async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
     tomorrow = (now() + timedelta(days=1)).weekday()
     if not SCHEDULE.get(tomorrow):
-        return  # ertaga dars yo'q bo'lsa yubormaymiz
+        return
     text = day_text(tomorrow, prefix="🔔 Ertangi dars jadvali:\n📅")
     text += f"\n\n📝 E-maktab saytiga kirib, uy vazifalari va baholaringni tekshirishni unutma!\n{EMAKTAB_URL}"
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 E-maktabni ochish", url=EMAKTAB_URL)]])
-    for u in reminder_users():
-        try:
-            context.bot.send_message(u, text, reply_markup=markup, disable_web_page_preview=True)
-        except Exception:
-            pass  # foydalanuvchi botni bloklagan bo'lishi mumkin
-        pytime.sleep(0.05)
-
-
-def main():
-    init_db()
-    req = {"connect_timeout": 20, "read_timeout": 20}
-    if PROXY_URL:
-        req["proxy_url"] = PROXY_URL
-    updater = Updater(TOKEN, use_context=True, defaults=Defaults(tzinfo=TZ),
-                      request_kwargs=req, workers=8)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(buttons, run_async=True))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler, run_async=True))
-    updater.job_queue.run_daily(send_reminders, REMINDER_TIME)
-    print("Bot ishga tushdi...")
-    updater.start_polling(drop_pending_updates=True)
-    updater.idle()
-
-
-if __name__ == "__main__":
-    main()
