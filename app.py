@@ -1,6 +1,8 @@
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import hmac
 from contextlib import contextmanager
-import os
 import sqlite3
 import time as pytime
 from datetime import datetime, time, timedelta
@@ -421,3 +423,53 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
     text = day_text(tomorrow, prefix="🔔 Ertangi dars jadvali:\n📅")
     text += f"\n\n📝 E-maktab saytiga kirib, uy vazifalari va baholaringni tekshirishni unutma!\n{EMAKTAB_URL}"
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 E-maktabni ochish", url=EMAKTAB_URL)]])
+    for u in reminder_users():
+        try:
+            await context.bot.send_message(u, text, reply_markup=markup, disable_web_page_preview=True)
+        except Exception:
+            pass  # foydalanuvchi botni bloklagan bo'lishi mumkin
+        pytime.sleep(0.05)
+
+
+# ---------------------------------------------------------------
+# RENDER UCHUN SOXTA VEB-SERVER (HEALTH CHECK)
+# ---------------------------------------------------------------
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_check_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+
+def main():
+    init_db()
+    if not TOKEN:
+        print("XATO: BOT_TOKEN topilmadi!")
+        return
+
+    # Render o'chib qolmasligi uchun port ochamiz
+    threading.Thread(target=start_health_check_server, daemon=True).start()
+
+    # python-telegram-bot v20+ Application Builder
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    if app.job_queue:
+        app.job_queue.run_daily(send_reminders, REMINDER_TIME)
+
+    print("Bot ishga tushdi...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+
+    
+    main()
