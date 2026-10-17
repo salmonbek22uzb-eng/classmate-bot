@@ -8,8 +8,7 @@ from datetime import datetime, time, timedelta
 import pytz
 import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (Updater, CommandHandler, CallbackQueryHandler,
-                          MessageHandler, Filters, Defaults)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 try:
     from dotenv import load_dotenv
