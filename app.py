@@ -32,6 +32,8 @@ TOKEN = os.getenv("BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "asusmac")
+# .env faylidan yoki to'g'ridan-to'g'ri o'zingizning Telegram ID'ingizni yozishingiz mumkin
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) 
 
 TZ = pytz.timezone("Asia/Tashkent")
 DB_FILE = "class_bot.db"
@@ -89,6 +91,7 @@ def now():
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.row_factory = sqlite3.Row  # Ustun nomlari bo'yicha murojaat qilish uchun
     try:
         yield conn
         conn.commit()
@@ -97,21 +100,41 @@ def db():
 
 def init_db():
     with db() as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users ("
-                  "user_id INTEGER PRIMARY KEY, name TEXT, reminder INTEGER DEFAULT 1)")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY, 
+                name TEXT, 
+                username TEXT,
+                created_at TEXT,
+                reminder INTEGER DEFAULT 1
+            )
+        """)
         c.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-        c.execute("CREATE TABLE IF NOT EXISTS ai_usage ("
-                  "user_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (user_id, day))")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ai_usage (
+                user_id INTEGER, 
+                day TEXT, 
+                count INTEGER, 
+                PRIMARY KEY (user_id, day)
+            )
+        """)
 
 def save_user(user):
+    current_time = now().strftime("%Y-%m-%d %H:%M")
     with db() as c:
-        c.execute("INSERT OR IGNORE INTO users (user_id, name) VALUES (?, ?)",
-                  (user.id, user.first_name or ""))
+        # Foydalanuvchi allaqachon mavjud bo'lsa, ism va usernameni yangilab turamiz
+        c.execute("""
+            INSERT INTO users (user_id, name, username, created_at) 
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET 
+                name=excluded.name, 
+                username=excluded.username
+        """, (user.id, user.first_name or "", user.username or "", current_time))
 
 def get_reminder(user_id):
     with db() as c:
         row = c.execute("SELECT reminder FROM users WHERE user_id=?", (user_id,)).fetchone()
-    return bool(row[0]) if row else True
+    return bool(row["reminder"]) if row else True
 
 def toggle_reminder(user_id):
     new = 0 if get_reminder(user_id) else 1
@@ -121,13 +144,24 @@ def toggle_reminder(user_id):
 
 def reminder_users():
     with db() as c:
-        return [r[0] for r in c.execute("SELECT user_id FROM users WHERE reminder=1")]
+        return [r["user_id"] for r in c.execute("SELECT user_id FROM users WHERE reminder=1")]
 
 def all_users():
     with db() as c:
-        return [r[0] for r in c.execute("SELECT user_id FROM users")]
+        return [r["user_id"] for r in c.execute("SELECT user_id FROM users")]
+
+def get_all_user_records():
+    with db() as c:
+        return c.execute("SELECT user_id, name, username FROM users").fetchall()
+
+def get_user_by_id(user_id):
+    with db() as c:
+        return c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
 
 def is_admin(user_id):
+    # Agar .env da ADMIN_ID belgilangan bo'lsa, u ham avtomatik admin bo'ladi
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return True
     with db() as c:
         return c.execute("SELECT 1 FROM admins WHERE user_id=?", (user_id,)).fetchone() is not None
 
@@ -143,7 +177,7 @@ def ai_used_today(user_id):
     with db() as c:
         row = c.execute("SELECT count FROM ai_usage WHERE user_id=? AND day=?", (user_id, day)).fetchone()
         total = c.execute("SELECT COALESCE(SUM(count),0) FROM ai_usage WHERE day=?", (day,)).fetchone()[0]
-    return (row[0] if row else 0), total
+    return (row["count"] if row else 0), total
 
 def ai_add_usage(user_id):
     day = now().strftime("%Y-%m-%d")
@@ -251,7 +285,7 @@ def back_menu():
 def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 E'lon yuborish", callback_data="adm_broadcast")],
-        [InlineKeyboardButton("👥 Foydalanuvchilar soni", callback_data="adm_stats")],
+        [InlineKeyboardButton("👥 Foydalanuvchilar ro'yxati va profillari", callback_data="adm_users_list")],
         [InlineKeyboardButton("🚪 Admin paneldan chiqish", callback_data="adm_logout")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="back")],
     ])
@@ -322,6 +356,60 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             context.user_data["state"] = "admin_pw"
             await query.edit_message_text("Parolni yoz 👇", reply_markup=back_menu())
+            
+    elif data == "adm_users_list":
+        if not is_admin(uid):
+            await query.edit_message_text("Avval admin paneldan kir.", reply_markup=back_menu())
+            return
+        records = get_all_user_records()
+        if not records:
+            await query.edit_message_text("Hozircha bazada foydalanuvchilar yo'q.", reply_markup=admin_menu())
+            return
+            
+        # Foydalanuvchilar uchun inline tugmalar yaratamiz
+        keyboard = []
+        for r in records:
+            name = r["name"] or f"ID: {r['user_id']}"
+            uname = f" (@{r['username']})" if r["username"] else ""
+            keyboard.append([InlineKeyboardButton(f"👤 {name}{uname}", callback_data=f"adm_user_prof:{r['user_id']}")])
+        
+        # Ortga qaytish tugmasi
+        keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="admin")])
+        await query.edit_message_text(
+            f"👥 **Foydalanuvchilar ro'yxati** (Jami: {len(records)} ta)\n\n"
+            "Profilini ko'rish uchun foydalanuvchini tanlang:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    elif data.startswith("adm_user_prof:"):
+        if not is_admin(uid):
+            return
+        target_id = int(data.split(":")[1])
+        u_data = get_user_by_id(target_id)
+        if not u_data:
+            await query.edit_message_text("Foydalanuvchi topilmadi.", reply_markup=admin_menu())
+            return
+            
+        username_str = f"@{u_data['username']}" if u_data["username"] else "Mavjud emas"
+        reg_date = u_data["created_at"] or "Noma'lum"
+        rem_status = "Yoqilgan ✅" if u_data["reminder"] else "O'chirilgan ❌"
+        
+        text = (
+            f"👤 **Foydalanuvchi Profili**\n\n"
+            f"🆔 **ID:** `{u_data['user_id']}`\n"
+            f"📛 **Ism:** {u_data['name']}\n"
+            f"🌐 **Username:** {username_str}\n"
+            f"🔔 **Kunlik eslatma:** {rem_status}\n"
+            f"📅 **Ro'yxatdan o'tgan vaqti:** {reg_date}"
+        )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Ro'yxatga qaytish", callback_data="adm_users_list")],
+            [InlineKeyboardButton("⬅️ Admin menyu", callback_data="admin")]
+        ])
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
     elif data in ("adm_broadcast", "adm_stats", "adm_logout", "adm_send", "adm_cancel"):
         if not is_admin(uid):
             await query.edit_message_text("Avval admin paneldan kir.", reply_markup=back_menu())
@@ -378,11 +466,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
                 context.user_data.clear()
                 await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
-                                               reply_markup=back_menu())
+                                              reply_markup=back_menu())
             else:
                 pw_fails[uid] = (fails, None)
                 await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
-                                               reply_markup=back_menu())
+                                              reply_markup=back_menu())
 
     elif state == "broadcast" and is_admin(uid):
         context.user_data["broadcast_text"] = text
@@ -470,6 +558,4 @@ def main():
 
 
 if __name__ == "__main__":
-
-    
     main()
