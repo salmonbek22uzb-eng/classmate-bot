@@ -444,7 +444,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                               reply_markup=back_menu())
                 return
             context.user_data["state"] = "subject_admin_pw"
-            await query.edit_message_text("Fan admini parolini (hppro) yoz 👇", reply_markup=back_menu())
+            await query.edit_message_text("Fan admini parolini yoz 👇", reply_markup=back_menu())
 
     elif data == "sub_update_hw":
         if not is_subject_admin(uid):
