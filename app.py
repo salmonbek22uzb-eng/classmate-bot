@@ -39,7 +39,7 @@ TZ = pytz.timezone("Asia/Tashkent")
 DB_FILE = "class_bot.db"
 EMAKTAB_URL = "https://emaktab.uz"
 REMINDER_TIME = time(20, 0, tzinfo=TZ)
-AI_USER_LIMIT = 7  # Limit 7 taga oshirildi
+AI_USER_LIMIT = 7
 AI_GLOBAL_LIMIT = 150
 MAX_PW_TRIES = 3
 LOCK_MINUTES = 10
@@ -119,7 +119,6 @@ def init_db():
                 PRIMARY KEY (user_id, day)
             )
         """)
-        # AI so'rovlari tarixini saqlash uchun jadval
         c.execute("""
             CREATE TABLE IF NOT EXISTS ai_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,7 +128,6 @@ def init_db():
                 created_at TEXT
             )
         """)
-        # Ona tili va adabiyot uyga vazifalari uchun jadval
         c.execute("""
             CREATE TABLE IF NOT EXISTS homework (
                 subject TEXT PRIMARY KEY,
@@ -296,15 +294,33 @@ def main_menu(user_id):
     rem = "yoqilgan ✅" if get_reminder(user_id) else "o'chirilgan ❌"
     keyboard = [
         [InlineKeyboardButton("📚 Dars jadvali", callback_data="schedule")],
-        [InlineKeyboardButton("📚 Uyga vazifa (Ona tili)", callback_data="homework_view")],
+        [InlineKeyboardButton("📚 Uyga vazifa", callback_data="homework_menu")],
         [InlineKeyboardButton("⏰ Hozir qaysi dars?", callback_data="now")],
         [InlineKeyboardButton("🤖 AI yordamchi", callback_data="ai")],
         [InlineKeyboardButton(f"🔔 Kunlik eslatma: {rem}", callback_data="toggle_rem")],
         [InlineKeyboardButton("👑 Lider admin", callback_data="admin")],
-        [InlineKeyboardButton("📝 Fan admini (Ona tili)", callback_data="subject_admin")],
+        [InlineKeyboardButton("📝 Fan admini", callback_data="subject_admin")],
         [InlineKeyboardButton("ℹ️ Bot haqida", callback_data="about")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def homework_select_menu():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📘 Ona tili", callback_data="hw_view:ona_tili"),
+            InlineKeyboardButton("📙 Adabiyot", callback_data="hw_view:adabiyot")
+        ],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="back")]
+    ])
+
+def subject_admin_hw_menu():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📘 Ona tili", callback_data="sub_hw_edit:ona_tili"),
+            InlineKeyboardButton("📙 Adabiyot", callback_data="sub_hw_edit:adabiyot")
+        ],
+        [InlineKeyboardButton("⬅️ Admin menyu", callback_data="subject_admin")]
+    ])
 
 def schedule_menu():
     return InlineKeyboardMarkup([
@@ -372,14 +388,22 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(week_text(), reply_markup=schedule_menu())
     elif data == "now":
         await query.edit_message_text(current_lesson_text(), reply_markup=back_menu())
-    elif data == "homework_view":
+    
+    # Uyga vazifa menyusi
+    elif data == "homework_menu":
+        await query.edit_message_text("📚 Qaysi fandan uyga vazifani ko'rmoqchisiz?", reply_markup=homework_select_menu())
+    
+    elif data.startswith("hw_view:"):
+        subj = data.split(":")[1]
+        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
         with db() as c:
-            row = c.execute("SELECT task_text, updated_at FROM homework WHERE subject='ona_tili'").fetchone()
+            row = c.execute("SELECT task_text, updated_at FROM homework WHERE subject=?", (subj,)).fetchone()
         if row and row["task_text"]:
-            hw_text = f"📚 **Ona tili va adabiyotdan uyga vazifa:**\n\n{row['task_text']}\n\n🕒 *Yangilangan vaqti:* {row['updated_at']}"
+            hw_text = f"📚 **{subj_name} fanidan uyga vazifa:**\n\n{row['task_text']}\n\n🕒 *Yangilangan vaqti:* {row['updated_at']}"
         else:
-            hw_text = "📚 **Ona tili va adabiyotdan uyga vazifa:**\n\nHozircha uyga vazifa kiritilmagan 📭"
-        await query.edit_message_text(hw_text, reply_markup=back_menu(), parse_mode="Markdown")
+            hw_text = f"📚 **{subj_name} fanidan uyga vazifa:**\n\nHozircha uyga vazifa kiritilmagan 📭"
+        await query.edit_message_text(hw_text, reply_markup=homework_select_menu(), parse_mode="Markdown")
+        
     elif data == "about":
         await query.edit_message_text(ABOUT_TEXT, reply_markup=back_menu(), parse_mode="HTML")
     elif data == "toggle_rem":
@@ -424,8 +448,16 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_subject_admin(uid):
             await query.edit_message_text("Avval fan admini sifatida kiring.", reply_markup=back_menu())
             return
+        await query.edit_message_text("Qaysi fan bo'yicha uyga vazifa kiritasiz?", reply_markup=subject_admin_hw_menu())
+
+    elif data.startswith("sub_hw_edit:"):
+        if not is_subject_admin(uid):
+            return
+        subj = data.split(":")[1]
+        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
         context.user_data["state"] = "update_homework"
-        await query.edit_message_text("📝 Ona tili va adabiyot fanidan янги уйга вазифа матnini yozing:", reply_markup=back_menu())
+        context.user_data["selected_subject"] = subj
+        await query.edit_message_text(f"📝 **{subj_name}** fanidan yangi uyga vazifa matnini yozing:", reply_markup=back_menu())
 
     elif data == "sub_logout":
         set_subject_admin(uid, False)
@@ -581,17 +613,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                               reply_markup=back_menu())
 
     elif state == "update_homework" and is_subject_admin(uid):
+        subj = context.user_data.get("selected_subject", "ona_tili")
+        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
         current_time = now().strftime("%Y-%m-%d %H:%M")
         with db() as c:
             c.execute("""
                 INSERT INTO homework (subject, task_text, updated_at) 
-                VALUES ('ona_tili', ?, ?)
+                VALUES (?, ?, ?)
                 ON CONFLICT(subject) DO UPDATE SET 
                     task_text=excluded.task_text, 
                     updated_at=excluded.updated_at
-            """, (text, current_time))
+            """, (subj, text, current_time))
         context.user_data.clear()
-        await update.message.reply_text("✅ Ona tili va adabiyot fanidan uyga vazifa muvaffaqiyatli yangilandi!", reply_markup=subject_admin_menu())
+        await update.message.reply_text(f"✅ {subj_name} fanidan uyga vazifa muvaffaqiyatli yangilandi!", reply_markup=subject_admin_menu())
 
     elif state == "broadcast" and is_admin(uid):
         context.user_data["broadcast_text"] = text
@@ -623,7 +657,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Menyudan tanla 👇", reply_markup=main_menu(uid))
 
 # ---------------------------------------------------------------
-# KUNLIK ESLATMA
+# KUNLIK ESLATMA VA BUGUNGI BIRDALIK XABAR
 # ---------------------------------------------------------------
 async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
     tomorrow = (now() + timedelta(days=1)).weekday()
@@ -637,6 +671,22 @@ async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(u, text, reply_markup=markup, disable_web_page_preview=True)
         except Exception:
             pass 
+        pytime.sleep(0.05)
+
+# Bugun soat 24:17 (00:17) da barcha foydalanuvchilarga yuboriladigan yangiliklar xabari
+async def send_one_time_news(context: ContextTypes.DEFAULT_TYPE):
+    news_text = (
+        "📰 **Sinfimiz botida yangiliklar!**\n\n"
+        "✨ Botimizga quyidagi yangi imkoniyatlar qo'shildi:\n"
+        "1️⃣ **Uyga vazifalar bo'limi:** Endi Ona tili va Adabiyot fanlaridan uyga vazifalarni alohida ko'rishingiz mumkin!\n"
+        "2️⃣ **AI Yordamchi:** Kunlik savollar limiti 7 taga oshirildi.\n\n"
+        "Botdan foydalanib o'qishlaringizda omad tilaymiz! 🎓"
+    )
+    for u in all_users():
+        try:
+            await context.bot.send_message(u, news_text, parse_mode="Markdown")
+        except Exception:
+            pass
         pytime.sleep(0.05)
 
 # ---------------------------------------------------------------
@@ -668,7 +718,16 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     if app.job_queue:
+        # Kunlik 20:00 eslatmasi
         app.job_queue.run_daily(send_reminders, REMINDER_TIME)
+        
+        # Bugun soat 24:17 (00:17) da bir martalik xabar yuborish rejalashtirishi
+        n = now()
+        target_time = n.replace(hour=0, minute=17, second=0, microsecond=0)
+        if target_time <= n:
+            target_time += timedelta(days=1)
+            
+        app.job_queue.run_once(send_one_time_news, when=target_time)
 
     print("Bot ishga tushdi...")
     app.run_polling(drop_pending_updates=True)
