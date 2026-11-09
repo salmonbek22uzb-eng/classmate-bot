@@ -34,7 +34,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "asusmac")
 SUBJECT_ADMIN_PASSWORD = os.getenv("SUBJECT_ADMIN_PASSWORD", "hppro")
 TEACHER_PASSWORD = os.getenv("TEACHER_PASSWORD", "hppro")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 TZ = pytz.timezone("Asia/Tashkent")
 DB_FILE = "class_bot.db"
@@ -78,9 +78,9 @@ ABOUT_TEXT = (
 
 AI_SYSTEM_PROMPT = (
     "Sen maktab o'quvchilariga yordam beradigan o'quv yordamchisan. "
-    "agar senga qo'pol sozlar ishlatsa yoki seni kim yaratganlik haqida sorasa , Men senga o'xshagan "
-    "dangasalarga qulaylik bolsin deb yaratilganman deb ayt. "
-    "O'zbek tilida (o'quvchi boshqa tilda yozsa, o'sha tilda) qisqa va tushunarli javob ber. "
+    "Agar senga qo'pol so'zlar ishlatishsa yoki seni kim yaratgani haqida so'rashsa, "
+    "\"Men senga o'xshagan dangasalarga qulaylik bo'lsin deb yaratilganman\" deb ayt. "
+    "O'zbek tilida qisqa va tushunarli javob ber. "
     "Faqat o'quv mavzulariga javob ber. Uy vazifasini shunchaki tayyor yechib berma, "
     "yechish yo'lini tushuntir. Javob 150 so'zdan oshmasin."
 )
@@ -94,7 +94,7 @@ def now():
 @contextmanager
 def db():
     conn = sqlite3.connect(DB_FILE, timeout=10)
-    conn.row_factory = sqlite3.Row  
+    conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
@@ -105,8 +105,8 @@ def init_db():
     with db() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY, 
-                name TEXT, 
+                user_id INTEGER PRIMARY KEY,
+                name TEXT,
                 username TEXT,
                 created_at TEXT,
                 reminder INTEGER DEFAULT 1
@@ -116,9 +116,9 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS subject_admins (user_id INTEGER PRIMARY KEY)")
         c.execute("""
             CREATE TABLE IF NOT EXISTS ai_usage (
-                user_id INTEGER, 
-                day TEXT, 
-                count INTEGER, 
+                user_id INTEGER,
+                day TEXT,
+                count INTEGER,
                 PRIMARY KEY (user_id, day)
             )
         """)
@@ -152,10 +152,10 @@ def save_user(user):
     current_time = now().strftime("%Y-%m-%d %H:%M")
     with db() as c:
         c.execute("""
-            INSERT INTO users (user_id, name, username, created_at) 
+            INSERT INTO users (user_id, name, username, created_at)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET 
-                name=excluded.name, 
+            ON CONFLICT(user_id) DO UPDATE SET
+                name=excluded.name,
                 username=excluded.username
         """, (user.id, user.first_name or "", user.username or "", current_time))
 
@@ -234,7 +234,7 @@ def verify_emaktab_credentials(login, password):
     try:
         session = requests.Session()
         response = session.post(
-            "https://emaktab.uz/login", 
+            "https://emaktab.uz/login",
             data={"login": login, "password": password},
             timeout=15,
             allow_redirects=True
@@ -668,153 +668,4 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
                                               reply_markup=back_menu())
             else:
-                pw_fails[uid] = (fails, None)
-                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
-                                              reply_markup=back_menu())
-
-    elif state == "subject_admin_pw":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        if hmac.compare_digest(text.strip().encode(), SUBJECT_ADMIN_PASSWORD.encode()):
-            set_subject_admin(uid, True)
-            subject_pw_fails.pop(uid, None)
-            context.user_data.clear()
-            await context.bot.send_message(uid, "✅ Parol to'g'ri. Fan admini paneli:", reply_markup=subject_admin_menu())
-        else:
-            fails = subject_pw_fails.get(uid, (0, None))[0] + 1
-            if fails >= MAX_PW_TRIES:
-                subject_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
-                context.user_data.clear()
-                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
-                                              reply_markup=back_menu())
-            else:
-                subject_pw_fails[uid] = (fails, None)
-                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
-                                              reply_markup=back_menu())
-
-    elif state == "teacher_pw":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        if hmac.compare_digest(text.strip().encode(), TEACHER_PASSWORD.encode()):
-            teacher_logged_in.add(uid)
-            teacher_pw_fails.pop(uid, None)
-            context.user_data.clear()
-            await context.bot.send_message(uid, "✅ Xush kelibsiz! O'qituvchi paneli:", reply_markup=teacher_panel_menu())
-        else:
-            fails = teacher_pw_fails.get(uid, (0, None))[0] + 1
-            if fails >= MAX_PW_TRIES:
-                teacher_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
-                context.user_data.clear()
-                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.", reply_markup=back_menu())
-            else:
-                teacher_pw_fails[uid] = (fails, None)
-                await context.bot.send_message(uid, f"❌ Parol xato! Yana urinib ko'ring ({MAX_PW_TRIES - fails} ta urinish qoldi).", reply_markup=back_menu())
-
-    elif state == "waiting_emaktab_login":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        login_text = text.strip()
-        if not login_text:
-            await update.message.reply_text("❌ Login bo'sh bo'lishi mumkin emas. Qaytadan yuboring:")
-            return
-        
-        context.user_data["temp_parent_login"] = login_text
-        context.user_data["state"] = "waiting_emaktab_password"
-        await update.message.reply_text(
-            "🔑 **2-qadam:** Endi shu ota-onaning E-maktab **parolini** kiriting:\n\n"
-            "*(Xavfsizlik uchun yozgan xabaringiz avtomatik o'chiriladi)*",
-            parse_mode="Markdown"
-        )
-
-    elif state == "waiting_emaktab_password":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        password_text = text.strip()
-        p_login = context.user_data.get("temp_parent_login")
-        
-        if not password_text or not p_login:
-            context.user_data.clear()
-            await update.message.reply_text("❌ Xatolik yuz berdi. Iltimos, boshidan urinib ko'ring.", reply_markup=teacher_panel_menu())
-            return
-        
-        wait_msg = await update.message.reply_text("🔍 E-maktab sayti orqali login va parol tekshirilmoqda, iltimos kuting...")
-
-        is_valid = verify_emaktab_credentials(p_login, password_text)
-
-        try:
-            await wait_msg.delete()
-        except Exception:
-            pass
-
-        if not is_valid:
-            context.user_data.clear()
-            await context.bot.send_message(
-                uid,
-                "❌ **Tekshiruvdan o'tmadi!**\n\n"
-                "Kiritilgan login yoki parol xato yoki E-maktab sayti bilan bog'lanib bo'lmadi.\n"
-                "Iltimos, ma'lumotlarni qaytadan tekshirib, boshqatdan urinib ko'ring.",
-                reply_markup=teacher_panel_menu(), parse_mode="Markdown"
-            )
-            return
-
-        current_time = now().strftime("%Y-%m-%d %H:%M")
-        with db() as c:
-            c.execute("INSERT INTO emaktab_accounts (teacher_id, parent_login, parent_password, added_at) VALUES (?, ?, ?, ?)",
-                      (uid, p_login, password_text, current_time))
-        
-        context.user_data.clear()
-        await context.bot.send_message(
-            uid,
-            f"✅ **Muvaffaqiyatli qo'shildi va tasdiqlandi!**\n\n"
-            f"👤 Login: `{p_login}`\n"
-            f"🔑 Parol: `********` (Xavfsiz saqlandi)\n\n"
-            f"Bot endi bu akkauntga haftasiga 2 marta avtomatik kirib turadi.",
-            reply_markup=teacher_panel_menu(), parse_mode="Markdown"
-        )
-
-    elif state == "update_homework" and is_subject_admin(uid):
-        subj = context.user_data.get("selected_subject", "ona_tili")
-        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
-        current_time = now().strftime("%Y-%m-%d %H:%M")
-        with db() as c:
-            c.execute("""
-                INSERT INTO homework (subject, task_text, updated_at) 
-                VALUES (?, ?, ?)
-                ON CONFLICT(subject) DO UPDATE SET 
-                    task_text=excluded.task_text, 
-                    updated_at=excluded.updated_at
-            """, (subj, text, current_time))
-        context.user_data.clear()
-        await update.message.reply_text(f"✅ {subj_name} fanidan uyga vazifa muvaffaqiyatli yangilandi!", reply_markup=subject_admin_menu())
-
-    elif state == "broadcast" and is_admin(uid):
-        context.user_data["broadcast_text"] = text
-        await update.message.reply_text(f"Shu e'lon yuboriladi:\n\n{text}", reply_markup=confirm_menu())
-
-    elif state == "ai":
-        used, total = ai_used_today(uid)
-        if used >= AI_USER_LIMIT:
-            await update.message.reply_text("Bugungi AI limiting (7 ta) tugadi. Ertaga qaytib kel 🙂",
-                                            reply_markup=back_menu())
-            return
-        if total >= AI_GLOBAL_LIMIT:
-            await update.message.reply_text("Bugun AI umumiy limiti tugadi. Ertaga urinib ko'r.",
-                                            reply_markup=back_menu())
-            return
-        wait = await update.message.reply_text("🤔 O'ylayapman...")
-        answer, error = ask_ai(text)
-        if not error:
-            ai_add_usage(uid, text, answer)
-            left = AI_USER_LIMIT - used - 1
-            answer += f"\n\n(Bugun yana {left} ta savol qoldi)"
-        try:
-            await wait.delete()
-        except Exception
+                pw_fails[uid] = (
