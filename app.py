@@ -33,7 +33,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "asusmac")
 SUBJECT_ADMIN_PASSWORD = os.getenv("SUBJECT_ADMIN_PASSWORD", "hppro")
-TEACHER_PASSWORD = os.getenv("TEACHER_PASSWORD", "hppro")  # O'qituvchi paneli uchun parol
+TEACHER_PASSWORD = os.getenv("TEACHER_PASSWORD", "hppro")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  
 
 TZ = pytz.timezone("Asia/Tashkent")
@@ -450,4 +450,371 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(ABOUT_TEXT, reply_markup=back_menu(), parse_mode="HTML")
     elif data == "toggle_rem":
         toggle_reminder(uid)
-        await query.edit_message_text("Quyidagilardan birini
+        await query.edit_message_text("Quyidagilardan birini tanla 👇", reply_markup=main_menu(uid))
+
+    elif data == "teacher_emaktab_menu":
+        if uid in teacher_logged_in:
+            await query.edit_message_text("👨‍🏫 **O'qituvchi paneli (E-maktab)**\n\nTanlang:", reply_markup=teacher_panel_menu(), parse_mode="Markdown")
+        else:
+            fails, locked_until = teacher_pw_fails.get(uid, (0, None))
+            if locked_until and now() < locked_until:
+                await query.edit_message_text("Ko'p marta xato kiritding. Keyinroq urinib ko'r.", reply_markup=back_menu())
+                return
+            context.user_data["state"] = "teacher_pw"
+            await query.edit_message_text("🔐 O'qituvchi parolini kiriting:", reply_markup=back_menu(), parse_mode="Markdown")
+
+    elif data == "teacher_logout":
+        teacher_logged_in.discard(uid)
+        context.user_data.clear()
+        await query.edit_message_text("O'qituvchi panelidan chiqdingiz.", reply_markup=main_menu(uid))
+
+    elif data == "add_emaktab_acc":
+        if uid not in teacher_logged_in:
+            await query.edit_message_text("Avval o'qituvchi paroli bilan kiring.", reply_markup=back_menu())
+            return
+        context.user_data["state"] = "waiting_emaktab_login"
+        await query.edit_message_text(
+            "📝 **1-qadam:** Ota-onaning E-maktab **loginini** kiriting:",
+            reply_markup=back_menu(), parse_mode="Markdown"
+        )
+    
+    elif data == "list_emaktab_acc":
+        if uid not in teacher_logged_in:
+            await query.edit_message_text("Avval o'qituvchi paroli bilan kiring.", reply_markup=back_menu())
+            return
+        with db() as c:
+            accs = c.execute("SELECT * FROM emaktab_accounts WHERE teacher_id=?", (uid,)).fetchall()
+        if not accs:
+            await query.edit_message_text("Hozircha ulangan akkauntlar yo'q.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")]]))
+            return
+        text = "📋 **Siz kiritgan E-maktab akkauntlari:**\n\n"
+        for i, a in enumerate(accs, 1):
+            text += f"{i}. Login: `{a['parent_login']}` (Qo'shilgan: {a['added_at']})\n"
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")]]), parse_mode="Markdown")
+
+    elif data == "ai":
+        used, _ = ai_used_today(uid)
+        left = max(AI_USER_LIMIT - used, 0)
+        context.user_data["state"] = "ai"
+        await query.edit_message_text(
+            f"🤖 AI yordamchi\n\nBugun yana {left} ta savol bera olasan.\n"
+            "Savolingni yoz 👇\n\n"
+            "⚠️ Ismingni, telefon raqamingni va boshqa shaxsiy ma'lumotlarni yozma.",
+            reply_markup=back_menu())
+
+    elif data == "admin":
+        if is_admin(uid):
+            await query.edit_message_text("🔐 Lider admin panel", reply_markup=admin_menu())
+        else:
+            fails, locked_until = pw_fails.get(uid, (0, None))
+            if locked_until and now() < locked_until:
+                await query.edit_message_text("Ko'p marta xato kiritding. Keyinroq urinib ko'r.",
+                                              reply_markup=back_menu())
+                return
+            context.user_data["state"] = "admin_pw"
+            await query.edit_message_text("Lider admin parolini yoz 👇", reply_markup=back_menu())
+
+    elif data == "subject_admin":
+        if is_subject_admin(uid):
+            await query.edit_message_text("📝 Fan admini paneli (Ona tili va adabiyot)", reply_markup=subject_admin_menu())
+        else:
+            fails, locked_until = subject_pw_fails.get(uid, (0, None))
+            if locked_until and now() < locked_until:
+                await query.edit_message_text("Ko'p marta xato kiritding. Keyinroq urinib ko'r.",
+                                              reply_markup=back_menu())
+                return
+            context.user_data["state"] = "subject_admin_pw"
+            await query.edit_message_text("Fan admini parolini yoz 👇", reply_markup=back_menu())
+
+    elif data == "sub_update_hw":
+        if not is_subject_admin(uid):
+            await query.edit_message_text("Avval fan admini sifatida kiring.", reply_markup=back_menu())
+            return
+        await query.edit_message_text("Qaysi fan bo'yicha uyga vazifa kiritasiz?", reply_markup=subject_admin_hw_menu())
+
+    elif data.startswith("sub_hw_edit:"):
+        if not is_subject_admin(uid):
+            return
+        subj = data.split(":")[1]
+        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
+        context.user_data["state"] = "update_homework"
+        context.user_data["selected_subject"] = subj
+        await query.edit_message_text(f"📝 **{subj_name}** fanidan yangi uyga vazifa matnini yozing:", reply_markup=back_menu())
+
+    elif data == "sub_logout":
+        set_subject_admin(uid, False)
+        context.user_data.clear()
+        await query.edit_message_text("Fan admini panelidan chiqdingiz.", reply_markup=main_menu(uid))
+        
+    elif data == "adm_ai_history":
+        if not is_admin(uid):
+            return
+        with db() as c:
+            rows = c.execute("SELECT user_id, prompt, response, created_at FROM ai_history ORDER BY id DESC LIMIT 10").fetchall()
+        if not rows:
+            await query.edit_message_text("Hozircha AI so'rovlari tarixi bo'sh.", reply_markup=admin_menu())
+            return
+        text = "📊 **Oxirgi 10 ta AI so'rovi tarixi:**\n\n"
+        for r in rows:
+            text += f"👤 UserID: `{r['user_id']}`\n❓ Savol: {r['prompt']}\n💬 Javob: {r['response'][:100]}...\n🕒 Vaqt: {r['created_at']}\n-------------------\n"
+        await query.edit_message_text(text, reply_markup=admin_menu(), parse_mode="Markdown")
+
+    elif data == "adm_users_list":
+        if not is_admin(uid):
+            await query.edit_message_text("Avval admin paneldan kir.", reply_markup=back_menu())
+            return
+        records = get_all_user_records()
+        if not records:
+            await query.edit_message_text("Hozircha bazada foydalanuvchilar yo'q.", reply_markup=admin_menu())
+            return
+            
+        keyboard = []
+        for r in records:
+            name = r["name"] or f"ID: {r['user_id']}"
+            uname = f" (@{r['username']})" if r["username"] else ""
+            keyboard.append([InlineKeyboardButton(f"👤 {name}{uname}", callback_data=f"adm_user_prof:{r['user_id']}")])
+        
+        keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="admin")])
+        await query.edit_message_text(
+            f"👥 **Foydalanuvchilar ro'yxati** (Jami: {len(records)} ta)\n\n"
+            "Profilini ko'rish uchun foydalanuvchini tanlang:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        
+    elif data.startswith("adm_user_prof:"):
+        if not is_admin(uid):
+            return
+        target_id = int(data.split(":")[1])
+        u_data = get_user_by_id(target_id)
+        if not u_data:
+            await query.edit_message_text("Foydalanuvchi topilmadi.", reply_markup=admin_menu())
+            return
+            
+        username_str = f"@{u_data['username']}" if u_data["username"] else "Mavjud emas"
+        reg_date = u_data["created_at"] or "Noma'lum"
+        rem_status = "Yoqilgan ✅" if u_data["reminder"] else "O'chirilgan ❌"
+        
+        text = (
+            f"👤 **Foydalanuvchi Profili**\n\n"
+            f"🆔 **ID:** `{u_data['user_id']}`\n"
+            f"📛 **Ism:** {u_data['name']}\n"
+            f"🌐 **Username:** {username_str}\n"
+            f"🔔 **Kunlik eslatma:** {rem_status}\n"
+            f"📅 **Ro'yxatdan o'tgan vaqti:** {reg_date}"
+        )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Ro'yxatga qaytish", callback_data="adm_users_list")],
+            [InlineKeyboardButton("⬅️ Admin menyu", callback_data="admin")]
+        ])
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+    elif data in ("adm_broadcast", "adm_stats", "adm_logout", "adm_send", "adm_cancel"):
+        if not is_admin(uid):
+            await query.edit_message_text("Avval admin paneldan kir.", reply_markup=back_menu())
+            return
+        if data == "adm_stats":
+            await query.edit_message_text(f"👥 Botdan foydalanuvchilar soni: {len(all_users())}",
+                                          reply_markup=admin_menu())
+        elif data == "adm_logout":
+            set_admin(uid, False)
+            context.user_data.clear()
+            await query.edit_message_text("Admin paneldan chiqding.", reply_markup=main_menu(uid))
+        elif data == "adm_broadcast":
+            context.user_data["state"] = "broadcast"
+            await query.edit_message_text("📢 E'lon matnini yoz 👇", reply_markup=back_menu())
+        elif data == "adm_cancel":
+            context.user_data.clear()
+            await query.edit_message_text("Bekor qilindi.", reply_markup=admin_menu())
+        elif data == "adm_send":
+            text = context.user_data.pop("broadcast_text", None)
+            context.user_data.pop("state", None)
+            if not text:
+                await query.edit_message_text("E'lon topilmadi.", reply_markup=admin_menu())
+                return
+            await query.edit_message_text("Yuborilmoqda...")
+            ok = 0
+            for u in all_users():
+                try:
+                    await context.bot.send_message(u, f"📢 E'lon\n\n{text}")
+                    ok += 1
+                except Exception:
+                    pass
+                pytime.sleep(0.05)
+            await context.bot.send_message(uid, f"✅ {ok} ta foydalanuvchiga yuborildi.",
+                                           reply_markup=admin_menu())
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get("state")
+    uid = update.effective_user.id
+    text = update.message.text or ""
+
+    if state == "admin_pw":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if hmac.compare_digest(text.strip().encode(), ADMIN_PASSWORD.encode()):
+            set_admin(uid, True)
+            pw_fails.pop(uid, None)
+            context.user_data.clear()
+            await context.bot.send_message(uid, "✅ Parol to'g'ri. Lider admin panel:", reply_markup=admin_menu())
+        else:
+            fails = pw_fails.get(uid, (0, None))[0] + 1
+            if fails >= MAX_PW_TRIES:
+                pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
+                context.user_data.clear()
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
+                                              reply_markup=back_menu())
+            else:
+                pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
+                                              reply_markup=back_menu())
+
+    elif state == "subject_admin_pw":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if hmac.compare_digest(text.strip().encode(), SUBJECT_ADMIN_PASSWORD.encode()):
+            set_subject_admin(uid, True)
+            subject_pw_fails.pop(uid, None)
+            context.user_data.clear()
+            await context.bot.send_message(uid, "✅ Parol to'g'ri. Fan admini paneli:", reply_markup=subject_admin_menu())
+        else:
+            fails = subject_pw_fails.get(uid, (0, None))[0] + 1
+            if fails >= MAX_PW_TRIES:
+                subject_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
+                context.user_data.clear()
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
+                                              reply_markup=back_menu())
+            else:
+                subject_pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
+                                              reply_markup=back_menu())
+
+    elif state == "teacher_pw":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if hmac.compare_digest(text.strip().encode(), TEACHER_PASSWORD.encode()):
+            teacher_logged_in.add(uid)
+            teacher_pw_fails.pop(uid, None)
+            context.user_data.clear()
+            await context.bot.send_message(uid, "✅ Xush kelibsiz! O'qituvchi paneli:", reply_markup=teacher_panel_menu())
+        else:
+            fails = teacher_pw_fails.get(uid, (0, None))[0] + 1
+            if fails >= MAX_PW_TRIES:
+                teacher_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
+                context.user_data.clear()
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.", reply_markup=back_menu())
+            else:
+                teacher_pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato! Yana urinib ko'ring ({MAX_PW_TRIES - fails} ta urinish qoldi).", reply_markup=back_menu())
+
+    elif state == "waiting_emaktab_login":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        login_text = text.strip()
+        if not login_text:
+            await update.message.reply_text("❌ Login bo'sh bo'lishi mumkin emas. Qaytadan yuboring:")
+            return
+        
+        context.user_data["temp_parent_login"] = login_text
+        context.user_data["state"] = "waiting_emaktab_password"
+        await update.message.reply_text(
+            "🔑 **2-qadam:** Endi shu ota-onaning E-maktab **parolini** kiriting:\n\n"
+            "*(Xavfsizlik uchun yozgan xabaringiz avtomatik o'chiriladi)*",
+            parse_mode="Markdown"
+        )
+
+    elif state == "waiting_emaktab_password":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        password_text = text.strip()
+        p_login = context.user_data.get("temp_parent_login")
+        
+        if not password_text or not p_login:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Xatolik yuz berdi. Iltimos, boshidan urinib ko'ring.", reply_markup=teacher_panel_menu())
+            return
+        
+        wait_msg = await update.message.reply_text("🔍 E-maktab sayti orqali login va parol tekshirilmoqda, iltimos kuting...")
+
+        is_valid = verify_emaktab_credentials(p_login, password_text)
+
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
+        if not is_valid:
+            context.user_data.clear()
+            await context.bot.send_message(
+                uid,
+                "❌ **Tekshiruvdan o'tmadi!**\n\n"
+                "Kiritilgan login yoki parol xato yoki E-maktab sayti bilan bog'lanib bo'lmadi.\n"
+                "Iltimos, ma'lumotlarni qaytadan tekshirib, boshqatdan urinib ko'ring.",
+                reply_markup=teacher_panel_menu(), parse_mode="Markdown"
+            )
+            return
+
+        current_time = now().strftime("%Y-%m-%d %H:%M")
+        with db() as c:
+            c.execute("INSERT INTO emaktab_accounts (teacher_id, parent_login, parent_password, added_at) VALUES (?, ?, ?, ?)",
+                      (uid, p_login, password_text, current_time))
+        
+        context.user_data.clear()
+        await context.bot.send_message(
+            uid,
+            f"✅ **Muvaffaqiyatli qo'shildi va tasdiqlandi!**\n\n"
+            f"👤 Login: `{p_login}`\n"
+            f"🔑 Parol: `********` (Xavfsiz saqlandi)\n\n"
+            f"Bot endi bu akkauntga haftasiga 2 marta avtomatik kirib turadi.",
+            reply_markup=teacher_panel_menu(), parse_mode="Markdown"
+        )
+
+    elif state == "update_homework" and is_subject_admin(uid):
+        subj = context.user_data.get("selected_subject", "ona_tili")
+        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
+        current_time = now().strftime("%Y-%m-%d %H:%M")
+        with db() as c:
+            c.execute("""
+                INSERT INTO homework (subject, task_text, updated_at) 
+                VALUES (?, ?, ?)
+                ON CONFLICT(subject) DO UPDATE SET 
+                    task_text=excluded.task_text, 
+                    updated_at=excluded.updated_at
+            """, (subj, text, current_time))
+        context.user_data.clear()
+        await update.message.reply_text(f"✅ {subj_name} fanidan uyga vazifa muvaffaqiyatli yangilandi!", reply_markup=subject_admin_menu())
+
+    elif state == "broadcast" and is_admin(uid):
+        context.user_data["broadcast_text"] = text
+        await update.message.reply_text(f"Shu e'lon yuboriladi:\n\n{text}", reply_markup=confirm_menu())
+
+    elif state == "ai":
+        used, total = ai_used_today(uid)
+        if used >= AI_USER_LIMIT:
+            await update.message.reply_text("Bugungi AI limiting (7 ta) tugadi. Ertaga qaytib kel 🙂",
+                                            reply_markup=back_menu())
+            return
+        if total >= AI_GLOBAL_LIMIT:
+            await update.message.reply_text("Bugun AI umumiy limiti tugadi. Ertaga urinib ko'r.",
+                                            reply_markup=back_menu())
+            return
+        wait = await update.message.reply_text("🤔 O'ylayapman...")
+        answer, error = ask_ai(text)
+        if not error:
+            ai_add_usage(uid, text, answer)
+            left = AI_USER_LIMIT - used - 1
+            answer += f"\n\n(Bugun yana {left} ta savol qoldi)"
+        try:
+            await wait.delete()
+        except Exception
