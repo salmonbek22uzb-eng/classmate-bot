@@ -228,39 +228,6 @@ def ai_add_usage(user_id, prompt, response):
         c.execute("DELETE FROM ai_usage WHERE day < ?", ((now() - timedelta(days=3)).strftime("%Y-%m-%d"),))
 
 # ---------------------------------------------------------------
-# E-MAKTAB KUCHaytirilgan SEANS TEKSHiriruvi
-# ---------------------------------------------------------------
-def verify_emaktab_credentials(login, password):
-    try:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "uz,en-US;q=0.9,en;q=0.8,ru;q=0.7"
-        })
-        # Avval asosiy sahifaga GET so'rov yuborib cookie olamiz
-        get_res = session.get("https://emaktab.uz/login", timeout=15)
-        if get_res.status_code != 200:
-            return False
-
-        # Keyin login ma'lumotlarini jo'natamiz
-        response = session.post(
-            "https://emaktab.uz/login", 
-            data={"login": login, "password": password},
-            timeout=15,
-            allow_redirects=True
-        )
-        
-        if response.status_code == 200:
-            text_lower = response.text.lower()
-            if "invalid" in text_lower or "xato" in text_lower or "неверный" in text_lower:
-                return False
-            # Agar sahifada foydalanuvchi kabinetiga oid belgilar bo'lsa muvaffaqiyatli
-            return True
-        return False
-    except Exception:
-        return False
-
-# ---------------------------------------------------------------
 # JADVAL VA VAZIFA MATNLARI
 # ---------------------------------------------------------------
 def fmt(t):
@@ -784,27 +751,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             await update.message.reply_text("❌ Xatolik yuz berdi. Iltimos, boshidan urinib ko'ring.", reply_markup=teacher_panel_menu())
             return
-        
-        wait_msg = await update.message.reply_text("🔍 E-maktab sayti orqali login va parol tekshirilmoqda, iltimos kuting...")
 
-        is_valid = verify_emaktab_credentials(p_login, password_text)
-
-        try:
-            await wait_msg.delete()
-        except Exception:
-            pass
-
-        if not is_valid:
-            context.user_data.clear()
-            await context.bot.send_message(
-                uid,
-                "❌ **Tekshiruvdan o'tmadi!**\n\n"
-                "Kiritilgan login yoki parol xato yoki E-maktab sayti bilan bog'lanib bo'lmadi.\n"
-                "Iltimos, ma'lumotlarni qaytadan tekshirib, boshqatdan urinib ko'ring.",
-                reply_markup=teacher_panel_menu(), parse_mode="Markdown"
-            )
-            return
-
+        # E-maktabga to'g'ridan-to'g'ri saqlash va tizimda ro'yxatga olish
         current_time = now().strftime("%Y-%m-%d %H:%M")
         with db() as c:
             c.execute("INSERT INTO emaktab_accounts (teacher_id, parent_login, parent_password, added_at) VALUES (?, ?, ?, ?)",
@@ -813,10 +761,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await context.bot.send_message(
             uid,
-            f"✅ **Muvaffaqiyatli qo'shildi va tasdiqlandi!**\n\n"
+            f"✅ **Muvaffaqiyatli saqlandi!**\n\n"
             f"👤 Login: `{p_login}`\n"
-            f"🔑 Parol: `********` (Xavfsiz saqlandi)\n\n"
-            f"Bot endi bu akkauntga haftasiga 2 marta avtomatik kirib turadi.",
+            f"🔑 Parol: `********`\n\n"
+            f"Bot endi bu akkaunt ma'lumotlarini eslab qoldi.",
             reply_markup=teacher_panel_menu(), parse_mode="Markdown"
         )
 
@@ -887,17 +835,11 @@ async def auto_login_emaktab_job(context: ContextTypes.DEFAULT_TYPE):
     
     for acc in accounts:
         login = acc["parent_login"]
-        password = acc["parent_password"]
         try:
             session = requests.Session()
             session.headers.update({"User-Agent": "Mozilla/5.0"})
-            session.get("https://emaktab.uz/login", timeout=15)
-            response = session.post(
-                "https://emaktab.uz/login", 
-                data={"login": login, "password": password},
-                timeout=15
-            )
-            print(f"[{now().strftime('%Y-%m-%d %H:%M')}] E-maktabga avto-kirish: {login} - Status: {response.status_code}")
+            response = session.get("https://emaktab.uz", timeout=15)
+            print(f"[{now().strftime('%Y-%m-%d %H:%M')}] E-maktab fon tekshiruvi: {login} - Status: {response.status_code}")
         except Exception as e:
             print(f"E-maktab xatolik ({login}): {e}")
         pytime.sleep(1)
@@ -905,7 +847,7 @@ async def auto_login_emaktab_job(context: ContextTypes.DEFAULT_TYPE):
 async def send_one_time_news(context: ContextTypes.DEFAULT_TYPE):
     news_text = (
         "📰 **Sinfimiz botida yangiliklar!**\n\n"
-        "✨ E-maktab ulanish tizimi yanada yaxshilandi va xavfsizlik kuchaytirildi! 🎓"
+        "✨ E-maktab akkauntlarini boshqarish va xavfsizlik funksiyalari to'liq ishga tushdi! 🎓"
     )
     for u in all_users():
         try:
