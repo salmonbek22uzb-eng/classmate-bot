@@ -595,7 +595,9 @@ def main():
     app.job_queue.run_daily(send_reminders,time(20,0,tzinfo=TZ),name='daily_reminder')
     # python-telegram-bot 20+: 0 yakshanba, 1 dushanba, 4 payshanba.
     app.job_queue.run_daily(emaktab_job,time(9,0,tzinfo=TZ),days=(1,4),name='emaktab_login')
-    log.info('Bot ishga tushdi')
+    # Python 3.14 asosiy oqimda event loopni avtomatik yaratmaydi.
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    log.info('Bot ishga tushmoqda')
     app.run_polling(drop_pending_updates=True)
 
 
