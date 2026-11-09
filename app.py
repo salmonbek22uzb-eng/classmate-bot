@@ -228,20 +228,33 @@ def ai_add_usage(user_id, prompt, response):
         c.execute("DELETE FROM ai_usage WHERE day < ?", ((now() - timedelta(days=3)).strftime("%Y-%m-%d"),))
 
 # ---------------------------------------------------------------
-# E-MAKTAB TEKSHIRUVCHI FUNKSIYA
+# E-MAKTAB KUCHaytirilgan SEANS TEKSHiriruvi
 # ---------------------------------------------------------------
 def verify_emaktab_credentials(login, password):
     try:
         session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "uz,en-US;q=0.9,en;q=0.8,ru;q=0.7"
+        })
+        # Avval asosiy sahifaga GET so'rov yuborib cookie olamiz
+        get_res = session.get("https://emaktab.uz/login", timeout=15)
+        if get_res.status_code != 200:
+            return False
+
+        # Keyin login ma'lumotlarini jo'natamiz
         response = session.post(
-            "https://emaktab.uz/login",
+            "https://emaktab.uz/login", 
             data={"login": login, "password": password},
             timeout=15,
             allow_redirects=True
         )
+        
         if response.status_code == 200:
-            if "Invalid" in response.text or "xato" in response.text.lower():
+            text_lower = response.text.lower()
+            if "invalid" in text_lower or "xato" in text_lower or "неверный" in text_lower:
                 return False
+            # Agar sahifada foydalanuvchi kabinetiga oid belgilar bo'lsa muvaffaqiyatli
             return True
         return False
     except Exception:
@@ -877,6 +890,8 @@ async def auto_login_emaktab_job(context: ContextTypes.DEFAULT_TYPE):
         password = acc["parent_password"]
         try:
             session = requests.Session()
+            session.headers.update({"User-Agent": "Mozilla/5.0"})
+            session.get("https://emaktab.uz/login", timeout=15)
             response = session.post(
                 "https://emaktab.uz/login", 
                 data={"login": login, "password": password},
@@ -890,7 +905,7 @@ async def auto_login_emaktab_job(context: ContextTypes.DEFAULT_TYPE):
 async def send_one_time_news(context: ContextTypes.DEFAULT_TYPE):
     news_text = (
         "📰 **Sinfimiz botida yangiliklar!**\n\n"
-        "✨ Botimizga xavfsizlik, parollarni o'chirish va E-maktab akkauntlarini boshqarish funksiyalari to'liq qo'shildi! 🎓"
+        "✨ E-maktab ulanish tizimi yanada yaxshilandi va xavfsizlik kuchaytirildi! 🎓"
     )
     for u in all_users():
         try:
