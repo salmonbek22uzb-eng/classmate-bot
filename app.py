@@ -728,4 +728,218 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         if hmac.compare_digest(text.strip().encode(), TEACHER_PASSWORD.encode()):
             teacher_logged_in.add(uid)
-            teacher_pw_fails.pop(
+            teacher_pw_fails.pop(uid, None)
+            context.user_data.clear()
+            await context.bot.send_message(uid, "✅ Xush kelibsiz! O'qituvchi paneli:", reply_markup=teacher_panel_menu())
+        else:
+            fails = teacher_pw_fails.get(uid, (0, None))[0] + 1
+            if fails >= MAX_PW_TRIES:
+                teacher_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
+                context.user_data.clear()
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.", reply_markup=back_menu())
+            else:
+                teacher_pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato! Yana urinib ko'ring ({MAX_PW_TRIES - fails} ta urinish qoldi).", reply_markup=back_menu())
+
+    elif state == "waiting_emaktab_login":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        login_text = text.strip()
+        if not login_text:
+            await update.message.reply_text("❌ Login bo'sh bo'lishi mumkin emas. Qaytadan yuboring:")
+            return
+        
+        context.user_data["temp_parent_login"] = login_text
+        context.user_data["state"] = "waiting_emaktab_password"
+        await update.message.reply_text(
+            "🔑 **2-qadam:** Endi shu ota-onaning E-maktab **parolini** kiriting:\n\n"
+            "*(Xavfsizlik uchun yozgan xabaringiz avtomatik o'chiriladi)*",
+            parse_mode="Markdown"
+        )
+
+    elif state == "waiting_emaktab_password":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        password_text = text.strip()
+        p_login = context.user_data.get("temp_parent_login")
+        
+        if not password_text or not p_login:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Xatolik yuz berdi. Iltimos, boshidan urinib ko'ring.", reply_markup=teacher_panel_menu())
+            return
+        
+        wait_msg = await update.message.reply_text("🔍 E-maktab sayti orqali login va parol tekshirilmoqda, iltimos kuting...")
+
+        is_valid = verify_emaktab_credentials(p_login, password_text)
+
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
+        if not is_valid:
+            context.user_data.clear()
+            await context.bot.send_message(
+                uid,
+                "❌ **Tekshiruvdan o'tmadi!**\n\n"
+                "Kiritilgan login yoki parol xato yoki E-maktab sayti bilan bog'lanib bo'lmadi.\n"
+                "Iltimos, ma'lumotlarni qaytadan tekshirib, boshqatdan urinib ko'ring.",
+                reply_markup=teacher_panel_menu(), parse_mode="Markdown"
+            )
+            return
+
+        current_time = now().strftime("%Y-%m-%d %H:%M")
+        with db() as c:
+            c.execute("INSERT INTO emaktab_accounts (teacher_id, parent_login, parent_password, added_at) VALUES (?, ?, ?, ?)",
+                      (uid, p_login, password_text, current_time))
+        
+        context.user_data.clear()
+        await context.bot.send_message(
+            uid,
+            f"✅ **Muvaffaqiyatli qo'shildi va tasdiqlandi!**\n\n"
+            f"👤 Login: `{p_login}`\n"
+            f"🔑 Parol: `********` (Xavfsiz saqlandi)\n\n"
+            f"Bot endi bu akkauntga haftasiga 2 marta avtomatik kirib turadi.",
+            reply_markup=teacher_panel_menu(), parse_mode="Markdown"
+        )
+
+    elif state == "update_homework" and is_subject_admin(uid):
+        subj = context.user_data.get("selected_subject", "ona_tili")
+        subj_name = "Ona tili" if subj == "ona_tili" else "Adabiyot"
+        current_time = now().strftime("%Y-%m-%d %H:%M")
+        with db() as c:
+            c.execute("""
+                INSERT INTO homework (subject, task_text, updated_at) 
+                VALUES (?, ?, ?)
+                ON CONFLICT(subject) DO UPDATE SET 
+                    task_text=excluded.task_text, 
+                    updated_at=excluded.updated_at
+            """, (subj, text, current_time))
+        context.user_data.clear()
+        await update.message.reply_text(f"✅ {subj_name} fanidan uyga vazifa muvaffaqiyatli yangilandi!", reply_markup=subject_admin_menu())
+
+    elif state == "broadcast" and is_admin(uid):
+        context.user_data["broadcast_text"] = text
+        await update.message.reply_text(f"Shu e'lon yuboriladi:\n\n{text}", reply_markup=confirm_menu())
+
+    elif state == "ai":
+        used, total = ai_used_today(uid)
+        if used >= AI_USER_LIMIT:
+            await update.message.reply_text("Bugungi AI limiting (7 ta) tugadi. Ertaga qaytib kel 🙂",
+                                            reply_markup=back_menu())
+            return
+        if total >= AI_GLOBAL_LIMIT:
+            await update.message.reply_text("Bugun AI umumiy limiti tugadi. Ertaga urinib ko'r.",
+                                            reply_markup=back_menu())
+            return
+        wait = await update.message.reply_text("🤔 O'ylayapman...")
+        answer, error = ask_ai(text)
+        if not error:
+            ai_add_usage(uid, text, answer)
+            left = AI_USER_LIMIT - used - 1
+            answer += f"\n\n(Bugun yana {left} ta savol qoldi)"
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await update.message.reply_text(answer, reply_markup=back_menu())
+
+    else:
+        await update.message.reply_text("Menyudan tanla 👇", reply_markup=main_menu(uid))
+
+# ---------------------------------------------------------------
+# KUNLIK ESLATMA VA E-MAKTABGA AVTO-KIRISH (JOB QUEUE)
+# ---------------------------------------------------------------
+async def send_reminders(context: ContextTypes.DEFAULT_TYPE):
+    tomorrow = (now() + timedelta(days=1)).weekday()
+    if not SCHEDULE.get(tomorrow):
+        return
+    text = day_text(tomorrow, prefix="🔔 Ertangi dars jadvali:\n📅")
+    text += f"\n\n📝 E-maktab saytiga kirib, uy vazifalaringni tekshirishni unutma!\n{EMAKTAB_URL}"
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🌐 E-maktabni ochish", url=EMAKTAB_URL)]])
+    for u in reminder_users():
+        try:
+            await context.bot.send_message(u, text, reply_markup=markup, disable_web_page_preview=True)
+        except Exception:
+            pass 
+        pytime.sleep(0.05)
+
+async def auto_login_emaktab_job(context: ContextTypes.DEFAULT_TYPE):
+    with db() as c:
+        accounts = c.execute("SELECT * FROM emaktab_accounts").fetchall()
+    
+    for acc in accounts:
+        login = acc["parent_login"]
+        password = acc["parent_password"]
+        try:
+            session = requests.Session()
+            response = session.post(
+                "https://emaktab.uz/login", 
+                data={"login": login, "password": password},
+                timeout=15
+            )
+            print(f"[{now().strftime('%Y-%m-%d %H:%M')}] E-maktabga avto-kirish: {login} - Status: {response.status_code}")
+        except Exception as e:
+            print(f"E-maktab xatolik ({login}): {e}")
+        pytime.sleep(1)
+
+async def send_one_time_news(context: ContextTypes.DEFAULT_TYPE):
+    news_text = (
+        "📰 **Sinfimiz botida yangiliklar!**\n\n"
+        "✨ Botimizga xavfsizlik, parollarni o'chirish va E-maktab akkauntlarini boshqarish funksiyalari to'liq qo'shildi! 🎓"
+    )
+    for u in all_users():
+        try:
+            await context.bot.send_message(u, news_text, parse_mode="Markdown")
+        except Exception:
+            pass
+        pytime.sleep(0.05)
+
+# ---------------------------------------------------------------
+# RENDER UCHUN SOXTA VEB-SERVER (HEALTH CHECK)
+# ---------------------------------------------------------------
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_check_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+def main():
+    init_db()
+    if not TOKEN:
+        print("XATO: BOT_TOKEN topilmadi!")
+        return
+
+    threading.Thread(target=start_health_check_server, daemon=True).start()
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    if app.job_queue:
+        app.job_queue.run_daily(send_reminders, REMINDER_TIME)
+        app.job_queue.run_daily(auto_login_emaktab_job, time(9, 0, tzinfo=TZ), days=(0, 3))
+        
+        n = now()
+        target_time = n.replace(hour=0, minute=17, second=0, microsecond=0)
+        if target_time <= n:
+            target_time += timedelta(days=1)
+            
+        app.job_queue.run_once(send_one_time_news, when=target_time)
+
+    print("Bot ishga tushdi...")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
