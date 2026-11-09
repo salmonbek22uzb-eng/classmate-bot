@@ -487,10 +487,38 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not accs:
             await query.edit_message_text("Hozircha ulangan akkauntlar yo'q.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")]]))
             return
+        
+        keyboard = []
         text = "📋 **Siz kiritgan E-maktab akkauntlari:**\n\n"
         for i, a in enumerate(accs, 1):
             text += f"{i}. Login: `{a['parent_login']}` (Qo'shilgan: {a['added_at']})\n"
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")]]), parse_mode="Markdown")
+            keyboard.append([InlineKeyboardButton(f"❌ O'chirish: {a['parent_login']}", callback_data=f"del_emaktab:{a['id']}")])
+        
+        keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data.startswith("del_emaktab:"):
+        if uid not in teacher_logged_in:
+            await query.edit_message_text("Avval o'qituvchi paroli bilan kiring.", reply_markup=back_menu())
+            return
+        acc_id = int(data.split(":")[1])
+        with db() as c:
+            c.execute("DELETE FROM emaktab_accounts WHERE id=? AND teacher_id=?", (acc_id, uid))
+        await query.answer("Akkaunt o'chirildi!", show_alert=True)
+        
+        # Ro'yxatni yangilash uchun qaytadan ochamiz
+        with db() as c:
+            accs = c.execute("SELECT * FROM emaktab_accounts WHERE teacher_id=?", (uid,)).fetchall()
+        if not accs:
+            await query.edit_message_text("Hozircha ulangan akkauntlar yo'q.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")]]))
+            return
+        keyboard = []
+        text = "📋 **Siz kiritgan E-maktab akkauntlari:**\n\n"
+        for i, a in enumerate(accs, 1):
+            text += f"{i}. Login: `{a['parent_login']}` (Qo'shilgan: {a['added_at']})\n"
+            keyboard.append([InlineKeyboardButton(f"❌ O'chirish: {a['parent_login']}", callback_data=f"del_emaktab:{a['id']}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="teacher_emaktab_menu")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif data == "ai":
         used, _ = ai_used_today(uid)
@@ -668,4 +696,96 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
                                               reply_markup=back_menu())
             else:
-                pw_fails[uid] = (
+                pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
+                                              reply_markup=back_menu())
+
+    elif state == "subject_admin_pw":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if hmac.compare_digest(text.strip().encode(), SUBJECT_ADMIN_PASSWORD.encode()):
+            set_subject_admin(uid, True)
+            subject_pw_fails.pop(uid, None)
+            context.user_data.clear()
+            await context.bot.send_message(uid, "✅ Parol to'g'ri. Fan admini paneli:", reply_markup=subject_admin_menu())
+        else:
+            fails = subject_pw_fails.get(uid, (0, None))[0] + 1
+            if fails >= MAX_PW_TRIES:
+                subject_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
+                context.user_data.clear()
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.",
+                                              reply_markup=back_menu())
+            else:
+                subject_pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato. Yana urinib ko'r ({MAX_PW_TRIES - fails} ta urinish qoldi).",
+                                              reply_markup=back_menu())
+
+    elif state == "teacher_pw":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        if hmac.compare_digest(text.strip().encode(), TEACHER_PASSWORD.encode()):
+            teacher_logged_in.add(uid)
+            teacher_pw_fails.pop(uid, None)
+            context.user_data.clear()
+            await context.bot.send_message(uid, "✅ Xush kelibsiz! O'qituvchi paneli:", reply_markup=teacher_panel_menu())
+        else:
+            fails = teacher_pw_fails.get(uid, (0, None))[0] + 1
+            if fails >= MAX_PW_TRIES:
+                teacher_pw_fails[uid] = (0, now() + timedelta(minutes=LOCK_MINUTES))
+                context.user_data.clear()
+                await context.bot.send_message(uid, f"❌ Parol xato. {LOCK_MINUTES} daqiqaga bloklandi.", reply_markup=back_menu())
+            else:
+                teacher_pw_fails[uid] = (fails, None)
+                await context.bot.send_message(uid, f"❌ Parol xato! Yana urinib ko'ring ({MAX_PW_TRIES - fails} ta urinish qoldi).", reply_markup=back_menu())
+
+    elif state == "waiting_emaktab_login":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        login_text = text.strip()
+        if not login_text:
+            await update.message.reply_text("❌ Login bo'sh bo'lishi mumkin emas. Qaytadan yuboring:")
+            return
+        
+        context.user_data["temp_parent_login"] = login_text
+        context.user_data["state"] = "waiting_emaktab_password"
+        await update.message.reply_text(
+            "🔑 **2-qadam:** Endi shu ota-onaning E-maktab **parolini** kiriting:\n\n"
+            "*(Xavfsizlik uchun yozgan xabaringiz avtomatik o'chiriladi)*",
+            parse_mode="Markdown"
+        )
+
+    elif state == "waiting_emaktab_password":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        password_text = text.strip()
+        p_login = context.user_data.get("temp_parent_login")
+        
+        if not password_text or not p_login:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Xatolik yuz berdi. Iltimos, boshidan urinib ko'ring.", reply_markup=teacher_panel_menu())
+            return
+        
+        wait_msg = await update.message.reply_text("🔍 E-maktab sayti orqali login va parol tekshirilmoqda, iltimos kuting...")
+
+        is_valid = verify_emaktab_credentials(p_login, password_text)
+
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+
+        if not is_valid:
+            context.user_data.clear()
+            await context.bot.send_message(
+                uid,
+                "❌ **Tekshiruvdan o'tmadi!**\n\n"
+                "Kiritilgan login yoki parol xato yoki E-maktab sayti bilan bog'lanib bo'lmadi.\n"
+                "Iltimos, ma'lumotlarni qaytadan tekshirib, boshqatdan urinib ko'ring.",
